@@ -155,6 +155,22 @@ async def get_video_info(request: DownloadRequest):
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
+            'nocheckcertificate': True,
+            'ignoreerrors': True,
+            'no_color': True,
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web'],
+                    'skip': ['hls', 'dash']
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Sec-Fetch-Mode': 'navigate'
+            }
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -196,6 +212,22 @@ async def get_download_url(request: DownloadRequest):
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
+            'nocheckcertificate': True,
+            'ignoreerrors': True,
+            'no_color': True,
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web'],
+                    'skip': ['hls', 'dash']
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Sec-Fetch-Mode': 'navigate'
+            }
         }
         
         if request.format == "audio":
