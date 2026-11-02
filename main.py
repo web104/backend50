@@ -6,11 +6,14 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import yt_dlp
+import httpx
+import requests
 import os
 import logging
 import hashlib
 import json
 import time
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -150,31 +153,38 @@ async def get_public_config():
 # Video info endpoint
 @app.post("/api/info")
 async def get_video_info(request: DownloadRequest):
+    """Get video info with multiple fallback methods"""
+    
+    # Try Method 1: yt-dlp with advanced options
     try:
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
             'nocheckcertificate': True,
-            'ignoreerrors': True,
+            'ignoreerrors': False,
             'no_color': True,
+            'geo_bypass': True,
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'web'],
-                    'skip': ['hls', 'dash']
+                    'player_client': ['android', 'web', 'ios'],
+                    'player_skip': ['webpage', 'configs'],
                 }
             },
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-us,en;q=0.5',
-                'Sec-Fetch-Mode': 'navigate'
+                'Accept-Encoding': 'gzip, deflate',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1'
             }
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info(f"Extracting info for: {request.url}")
+            logger.info(f"Method 1 (yt-dlp): Extracting info for {request.url}")
             info = ydl.extract_info(request.url, download=False)
             
             formats = []
@@ -201,32 +211,82 @@ async def get_video_info(request: DownloadRequest):
                 }
             }
     except Exception as e:
-        logger.error(f"Error extracting info: {str(e)}")
-        raise HTTPException(status_code=400, detail=f"Failed to extract info: {str(e)}")
+        logger.warning(f"Method 1 failed: {str(e)}")
+        
+        # Try Method 2: Invidious API (for YouTube)
+        if 'youtube.com' in request.url or 'youtu.be' in request.url:
+            try:
+                video_id = extract_youtube_id(request.url)
+                if video_id:
+                    logger.info(f"Method 2 (Invidious): Trying video ID {video_id}")
+                    invidious_url = f"https://inv.riverside.rocks/api/v1/videos/{video_id}"
+                    
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        response = await client.get(invidious_url)
+                        if response.status_code == 200:
+                            data = response.json()
+                            return {
+                                "success": True,
+                                "data": {
+                                    "title": data.get('title', 'Unknown'),
+                                    "thumbnail": data.get('videoThumbnails', [{}])[0].get('url', ''),
+                                    "duration": data.get('lengthSeconds', 0),
+                                    "uploader": data.get('author', 'Unknown'),
+                                    "description": data.get('description', '')[:300],
+                                    "view_count": data.get('viewCount', 0),
+                                    "formats": [],
+                                    "webpage_url": request.url
+                                }
+                            }
+            except Exception as e2:
+                logger.warning(f"Method 2 failed: {str(e2)}")
+        
+        # All methods failed
+        raise HTTPException(status_code=400, detail=f"Could not extract video info. Original error: {str(e)}")
 
-# Download endpoint
+def extract_youtube_id(url: str) -> Optional[str]:
+    """Extract YouTube video ID from URL"""
+    patterns = [
+        r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\n?#]+)',
+        r'youtube\.com\/embed\/([^&\n?#]+)',
+        r'youtube\.com\/v\/([^&\n?#]+)'
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
+# Download endpoint with multiple fallback methods
 @app.post("/api/download")
 async def get_download_url(request: DownloadRequest):
+    """Download video with multiple fallback methods"""
+    
+    # Try Method 1: yt-dlp with all optimizations
     try:
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
             'nocheckcertificate': True,
-            'ignoreerrors': True,
+            'ignoreerrors': False,
             'no_color': True,
+            'geo_bypass': True,
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'web'],
-                    'skip': ['hls', 'dash']
+                    'player_client': ['android', 'web', 'ios'],
+                    'player_skip': ['webpage', 'configs'],
                 }
             },
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-us,en;q=0.5',
-                'Sec-Fetch-Mode': 'navigate'
+                'Accept-Encoding': 'gzip, deflate',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1'
             }
         }
         
@@ -240,7 +300,7 @@ async def get_download_url(request: DownloadRequest):
             ydl_opts['format'] = 'best'
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info(f"Processing download for: {request.url}")
+            logger.info(f"Method 1 (yt-dlp): Processing {request.url}")
             info = ydl.extract_info(request.url, download=False)
             
             if request.format == "thumbnail":
@@ -260,21 +320,94 @@ async def get_download_url(request: DownloadRequest):
             elif 'formats' in info and len(info['formats']) > 0:
                 format_url = info['formats'][0].get('url', '')
             
-            return {
-                "success": True,
-                "type": "video" if request.format != "audio" else "audio",
-                "data": {
-                    "title": info.get('title', 'Unknown'),
-                    "download_url": format_url,
-                    "thumbnail": info.get('thumbnail', ''),
-                    "duration": info.get('duration', 0),
-                    "ext": info.get('ext', 'mp4')
+            if format_url:
+                return {
+                    "success": True,
+                    "type": "video" if request.format != "audio" else "audio",
+                    "data": {
+                        "title": info.get('title', 'Unknown'),
+                        "download_url": format_url,
+                        "thumbnail": info.get('thumbnail', ''),
+                        "duration": info.get('duration', 0),
+                        "ext": info.get('ext', 'mp4')
+                    }
                 }
-            }
                 
     except Exception as e:
-        logger.error(f"Error processing download: {str(e)}")
-        raise HTTPException(status_code=400, detail=f"Failed to process: {str(e)}")
+        logger.warning(f"Method 1 (yt-dlp) failed: {str(e)}")
+        
+        # Try Method 2: Cobalt API (supports multiple platforms)
+        try:
+            logger.info(f"Method 2 (Cobalt): Trying {request.url}")
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                cobalt_response = await client.post(
+                    "https://api.cobalt.tools/api/json",
+                    json={
+                        "url": request.url,
+                        "vCodec": "h264",
+                        "vQuality": "1080",
+                        "aFormat": "mp3" if request.format == "audio" else "best",
+                        "isAudioOnly": request.format == "audio"
+                    },
+                    headers={
+                        "Accept": "application/json",
+                        "Content-Type": "application/json"
+                    }
+                )
+                
+                if cobalt_response.status_code == 200:
+                    cobalt_data = cobalt_response.json()
+                    if cobalt_data.get('status') == 'stream':
+                        return {
+                            "success": True,
+                            "type": "video" if request.format != "audio" else "audio",
+                            "data": {
+                                "title": "Video",
+                                "download_url": cobalt_data.get('url'),
+                                "thumbnail": "",
+                                "duration": 0,
+                                "ext": "mp4" if request.format != "audio" else "mp3"
+                            }
+                        }
+        except Exception as e2:
+            logger.warning(f"Method 2 (Cobalt) failed: {str(e2)}")
+        
+        # Try Method 3: Invidious for YouTube
+        if 'youtube.com' in request.url or 'youtu.be' in request.url:
+            try:
+                video_id = extract_youtube_id(request.url)
+                if video_id:
+                    logger.info(f"Method 3 (Invidious): Trying video ID {video_id}")
+                    invidious_url = f"https://inv.riverside.rocks/api/v1/videos/{video_id}"
+                    
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        response = await client.get(invidious_url)
+                        if response.status_code == 200:
+                            data = response.json()
+                            
+                            # Get download URL from adaptive formats
+                            formats = data.get('adaptiveFormats', [])
+                            if formats:
+                                best_format = formats[0]
+                                return {
+                                    "success": True,
+                                    "type": "video" if request.format != "audio" else "audio",
+                                    "data": {
+                                        "title": data.get('title', 'Unknown'),
+                                        "download_url": best_format.get('url', ''),
+                                        "thumbnail": data.get('videoThumbnails', [{}])[0].get('url', ''),
+                                        "duration": data.get('lengthSeconds', 0),
+                                        "ext": best_format.get('container', 'mp4')
+                                    }
+                                }
+            except Exception as e3:
+                logger.warning(f"Method 3 (Invidious) failed: {str(e3)}")
+        
+        # All methods failed
+        raise HTTPException(
+            status_code=400, 
+            detail=f"All download methods failed. This video may be restricted or require authentication. Original error: {str(e)}"
+        )
 
 # Admin Login
 @app.post("/api/admin/login")
