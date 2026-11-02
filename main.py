@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Social Media Downloader API", version="5.0.0")
+app = FastAPI(title="Social Media Downloader API", version="5.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -79,21 +79,25 @@ def extract_video_id(url: str) -> Optional[str]:
 async def download_from_invidious(video_id: str) -> dict:
     """Download using Invidious API - working alternative"""
     invidious_instances = [
-        "https://invidious.jing.rocks",
         "https://inv.tux.pizza",
+        "https://invidious.jing.rocks",
+        "https://vid.puffyan.us",
         "https://invidious.privacyredirect.com",
-        "https://vid.puffyan.us"
+        "https://invidious.protokolla.fi",
+        "https://inv.riverside.rocks"
     ]
     
     for instance in invidious_instances:
         try:
             api_url = f"{instance}/api/v1/videos/{video_id}"
+            logger.info(f"Trying Invidious instance: {instance}")
             
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
                 response = await client.get(api_url)
                 
                 if response.status_code == 200:
                     data = response.json()
+                    logger.info(f"Got response from {instance}")
                     
                     formats = data.get('formatStreams', []) + data.get('adaptiveFormats', [])
                     
@@ -108,21 +112,73 @@ async def download_from_invidious(video_id: str) -> dict:
                         if not best_format and formats:
                             best_format = formats[0]
                         
-                        if best_format:
+                        if best_format and best_format.get('url'):
+                            # Get thumbnail safely
+                            thumbnails = data.get('videoThumbnails', [])
+                            thumbnail = thumbnails[0].get('url', '') if thumbnails else f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
+                            
+                            logger.info(f"Found downloadable format via {instance}")
                             return {
                                 "success": True,
                                 "download_url": best_format.get('url'),
                                 "title": data.get('title', 'Video'),
-                                "thumbnail": data.get('videoThumbnails', [{}])[0].get('url', ''),
+                                "thumbnail": thumbnail,
                                 "duration": data.get('lengthSeconds', 0),
                                 "uploader": data.get('author', 'Unknown'),
                                 "view_count": data.get('viewCount', 0),
                                 "description": data.get('description', ''),
                                 "method": f"invidious ({instance})"
                             }
+                    else:
+                        logger.warning(f"No formats found at {instance}")
             
         except Exception as e:
             logger.error(f"Invidious {instance} error: {e}")
+            continue
+    
+    logger.error("All Invidious instances failed")
+    return {"success": False}
+
+async def download_from_piped(video_id: str) -> dict:
+    """Try Piped API - another YouTube frontend"""
+    piped_instances = [
+        "https://pipedapi.kavin.rocks",
+        "https://pipedapi.tokhmi.xyz",
+        "https://api-piped.mha.fi"
+    ]
+    
+    for instance in piped_instances:
+        try:
+            api_url = f"{instance}/streams/{video_id}"
+            logger.info(f"Trying Piped instance: {instance}")
+            
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                response = await client.get(api_url)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    video_streams = data.get('videoStreams', [])
+                    
+                    if video_streams:
+                        # Get best quality
+                        best_stream = max(video_streams, key=lambda x: x.get('quality', '').replace('p', '0'))
+                        
+                        if best_stream.get('url'):
+                            logger.info(f"Found stream via Piped {instance}")
+                            return {
+                                "success": True,
+                                "download_url": best_stream.get('url'),
+                                "title": data.get('title', 'Video'),
+                                "thumbnail": data.get('thumbnailUrl', f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"),
+                                "duration": data.get('duration', 0),
+                                "uploader": data.get('uploader', 'Unknown'),
+                                "view_count": data.get('views', 0),
+                                "description": data.get('description', ''),
+                                "method": f"piped ({instance})"
+                            }
+        except Exception as e:
+            logger.error(f"Piped {instance} error: {e}")
             continue
     
     return {"success": False}
@@ -204,14 +260,14 @@ async def download_from_y2mate_api(video_id: str) -> dict:
 @app.get("/")
 async def root():
     return {
-        "message": "Social Media Downloader API v5.0",
+        "message": "Social Media Downloader API v5.1",
         "status": "active",
-        "methods": ["Invidious", "Vevioz", "Y2Mate API", "Multiple Fallbacks"]
+        "methods": ["Invidious", "Piped", "Vevioz", "Y2Mate", "Multiple Fallbacks"]
     }
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "version": "5.0.0", "methods": ["invidious", "vevioz", "y2mate"]}
+    return {"status": "healthy", "version": "5.1.0", "methods": ["invidious", "piped", "vevioz", "y2mate"]}
 
 @app.get("/api/config")
 async def get_config():
@@ -303,7 +359,28 @@ async def download(request: DownloadRequest):
                 }
             }
         
-        # Method 2: Try Social Download
+        # Method 2: Try Piped API
+        logger.info("Trying Piped API")
+        result = await download_from_piped(video_id)
+        
+        if result.get("success") and result.get("download_url"):
+            logger.info(f"Success via {result.get('method')}")
+            return {
+                "success": True,
+                "type": "video",
+                "data": {
+                    "title": result.get("title", f"Video {video_id}"),
+                    "download_url": result.get("download_url"),
+                    "thumbnail": result.get("thumbnail", f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"),
+                    "duration": result.get("duration", 0),
+                    "uploader": result.get("uploader", "Unknown"),
+                    "view_count": result.get("view_count", 0),
+                    "ext": "mp4",
+                    "method": result.get("method", "piped")
+                }
+            }
+        
+        # Method 3: Try Social Download
         logger.info("Trying Social Download")
         result = await download_from_social_download(request.url)
         
@@ -322,7 +399,7 @@ async def download(request: DownloadRequest):
                 }
             }
         
-        # Method 3: Try Y2Mate API
+        # Method 4: Try Y2Mate API
         logger.info("Trying Y2Mate API")
         result = await download_from_y2mate_api(video_id)
         
